@@ -1,7 +1,7 @@
 # @technowobble/loopia-provider
 
-A [Pulumi](https://www.pulumi.com/) dynamic provider that manages DNS zone records at
-[Loopia](https://www.loopia.com/) through its XML-RPC API (LoopiaAPI).
+A [Pulumi](https://www.pulumi.com/) dynamic provider that manages DNS zone records, and a domain's
+nameservers, at [Loopia](https://www.loopia.com/) through its XML-RPC API (LoopiaAPI).
 
 > **Unofficial.** This project is not affiliated with, endorsed by or supported by Loopia.
 
@@ -78,10 +78,51 @@ new LoopiaZoneRecord("mx", {
 });
 ```
 
+### `LoopiaDomainNameservers`
+
+Sets the nameservers a domain is delegated to (Loopia's `updateDNSServers`).
+
+| Input | Type | Notes |
+| --- | --- | --- |
+| `domain` | `string` | Registered domain. Changing it replaces the resource |
+| `nameservers` | `string[]` | At least two hostnames, in any order |
+| `loopiaUser` / `loopiaPassword` | `string` | API credentials (secret) |
+
+```ts
+import { LoopiaDomainNameservers } from "@technowobble/loopia-provider";
+
+// e.g. a Cloud DNS managed zone (or any zone resource that exports its nameservers)
+const zone = new gcp.dns.ManagedZone("zone", { dnsName: "example.com.", name: "example-com" });
+
+new LoopiaDomainNameservers("example-com-ns", {
+  domain: "example.com",
+  nameservers: zone.nameServers,
+  loopiaUser,
+  loopiaPassword,
+});
+```
+
+Things to know before using it:
+
+- **Loopia cannot tell Pulumi what the nameservers are.** The API can set them but has no method
+  that reads them, so this resource is "set and trust": the state holds what Pulumi last wrote.
+- **Drift hint on refresh.** `pulumi refresh` looks up the domain's NS records in public DNS
+  (1.1.1.1 and 8.8.8.8). If one of your nameservers is missing from them, the observed list is
+  recorded as drift, and the next `pulumi up` writes your list again. Extra NS records at the apex
+  are tolerated. Previews and updates never do the lookup. After a change it can take a
+  while for public DNS to follow, and a failed lookup is ignored.
+- **Delete does nothing.** Removing the resource from your program leaves the domain where it is,
+  so a code change can never take a site offline by itself. To go back to Loopia's own DNS, set the
+  nameservers you want in code.
+- **A wrong list is an outage.** Preview before you apply, and consider `protect: true`.
+- **DNSSEC.** The API has no DNSSEC methods. If the domain has a DS record at the registry, remove
+  or update it *before* switching delegation, otherwise validating resolvers will fail to resolve
+  the domain.
+
 ## Not managed
 
-Only zone records are managed. A domain's nameservers and DNSSEC settings are not, because the
-Loopia API cannot read them back. Change those in the Loopia Customer Zone.
+DNSSEC settings and DS records. The Loopia API has no methods for them, so handle them in the
+Loopia Customer Zone.
 
 ## Development
 

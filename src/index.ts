@@ -1,2 +1,2 @@
-export { LoopiaZoneRecord } from "./loopia";
-export type { LoopiaZoneRecordInputs } from "./loopia";
+export { LoopiaZoneRecord, LoopiaDomainNameservers } from "./loopia";
+export type { LoopiaZoneRecordInputs, LoopiaDomainNameserversInputs } from "./loopia";

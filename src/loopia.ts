@@ -14,6 +14,9 @@
 
 import * as pulumi from "@pulumi/pulumi";
 import * as xmlrpc from "xmlrpc";
+// `import = require` keeps the real built-in module object, which Pulumi's closure
+// serializer turns into `require("dns")` (an `import *` namespace copy would not be).
+import dns = require("dns");
 
 // ── XML-RPC client ────────────────────────────────────────────────────────────
 
@@ -197,17 +200,19 @@ export const loopiaProvider: pulumi.dynamic.ResourceProvider = {
     // as 0, like the inputs do: comparing `undefined !== 0` made such records show
     // as an update on every preview and run a no-op updateZoneRecord on every
     // deploy.
-    const changes =
-      normRdata(news.type, olds.rdata) !== normRdata(news.type, news.rdata) ||
-      olds.ttl !== news.ttl ||
-      (olds.priority ?? 0) !== (news.priority ?? 0) ||
-      olds.type !== news.type;
-
-    // Type or subdomain change requires delete + recreate.
+    // Type, subdomain or domain change requires delete + recreate.
     const replaces: string[] = [];
     if (olds.type !== news.type) replaces.push("type");
     if (olds.subdomain !== news.subdomain) replaces.push("subdomain");
     if (olds.domain !== news.domain) replaces.push("domain");
+
+    // A replacement must also be reported as a change, or the engine may treat the diff as a
+    // no-op (this used to be missed for a subdomain-only or domain-only change).
+    const changes =
+      replaces.length > 0 ||
+      normRdata(news.type, olds.rdata) !== normRdata(news.type, news.rdata) ||
+      olds.ttl !== news.ttl ||
+      (olds.priority ?? 0) !== (news.priority ?? 0);
 
     return { changes, replaces };
   },
@@ -267,5 +272,152 @@ export class LoopiaZoneRecord extends pulumi.dynamic.Resource {
         ],
       }
     );
+  }
+}
+
+// ── Domain nameservers ────────────────────────────────────────────────────────
+//
+// Loopia's API can SET a domain's nameservers (updateDNSServers) but has no method that
+// reads them back (getDomain returns no nameserver field, and the zone's own NS records
+// always say ns1/ns2.loopia.se). So this resource is "set and trust": state holds what
+// Pulumi last wrote. `pulumi refresh` additionally compares it with the NS records seen in
+// public DNS, as a hint of manual changes (propagation can lag behind a change, and extra
+// NS records at the apex are tolerated).
+// Deleting the resource does nothing: the domain keeps its nameservers.
+//
+// As above, keep everything the provider needs inside function bodies or as module-level
+// functions: Pulumi serialises the provider's closures.
+
+export interface LoopiaDomainNameserversInputs {
+  /** Registered domain, e.g. "example.com" (ACE/punycode for IDN domains). */
+  domain: pulumi.Input<string>;
+  /** At least two nameserver hostnames, e.g. a managed zone's `nameServers` output. */
+  nameservers: pulumi.Input<pulumi.Input<string>[]>;
+}
+
+interface ResolvedNameserverInputs {
+  domain: string;
+  nameservers: string[];
+  loopiaUser: string;
+  loopiaPassword: string;
+}
+
+// Pulumi's marker for "not known yet" (e.g. a zone's nameservers during a preview). Read it
+// into a plain string here: the serializer inlines strings, so the provider does not have to
+// capture the whole Pulumi module.
+const unknownValue: string =
+  (pulumi.runtime as { unknownValue?: string }).unknownValue ?? "04da6b54-80e4-46f7-96ec-b56ff0331ba9";
+
+// Hostnames are compared without a trailing dot and case-insensitively, and in any order.
+const normNs = (s: string) => s.trim().replace(/\.$/, "").toLowerCase();
+const sameNs = (a: string[] = [], b: string[] = []) => {
+  const x = a.map(normNs).sort();
+  const y = b.map(normNs).sort();
+  return x.length === y.length && x.every((v, i) => v === y[i]);
+};
+
+export const loopiaNameserversProvider: pulumi.dynamic.ResourceProvider = {
+  async check(_olds: ResolvedNameserverInputs, news: ResolvedNameserverInputs) {
+    // During a preview the list can still be unknown (e.g. a zone that does not exist yet):
+    // Pulumi passes a sentinel then. Only validate what is known.
+    const list = news.nameservers as unknown;
+    if (list === unknownValue) return { inputs: news };
+    if (!Array.isArray(list)) {
+      return {
+        failures: [{ property: "nameservers", reason: "nameservers must be a list of hostnames" }],
+      };
+    }
+    if (list.includes(unknownValue)) return { inputs: news };
+
+    const failures: { property: string; reason: string }[] = [];
+    if (list.length < 2) {
+      failures.push({
+        property: "nameservers",
+        reason: "Loopia requires at least two nameservers",
+      });
+    }
+    const hostname = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+\.?$/i;
+    for (const ns of list) {
+      if (typeof ns !== "string" || !hostname.test(ns.trim())) {
+        failures.push({
+          property: "nameservers",
+          reason: `"${String(ns)}" is not a hostname`,
+        });
+      }
+    }
+    return failures.length ? { failures } : { inputs: news };
+  },
+
+  async create(inputs: ResolvedNameserverInputs) {
+    const call = createClient(inputs.loopiaUser, inputs.loopiaPassword);
+    await call<string>("updateDNSServers", [inputs.domain, inputs.nameservers]);
+    return { id: inputs.domain, outs: { ...inputs } };
+  },
+
+  async read(id: string, props: ResolvedNameserverInputs) {
+    // The API cannot return the nameservers, so look at what public DNS says. If the lookup
+    // fails, keep the stored state: no lookup result is not evidence of drift.
+    // On `pulumi import` only the id (the domain) is known, so take it from there.
+    const domain = props?.domain ?? id;
+    try {
+      const resolver = new dns.promises.Resolver({ timeout: 4000, tries: 2 });
+      resolver.setServers(["1.1.1.1", "8.8.8.8"]);
+      const observed = await resolver.resolveNs(domain);
+      if (observed.length > 0) {
+        // Drift means a configured nameserver is missing from what DNS shows. Extra servers
+        // at the zone apex are tolerated: the apex NS set is not always the delegation.
+        const seen = observed.map(normNs);
+        const stored = props?.nameservers;
+        const drifted = !Array.isArray(stored) || stored.some((ns) => !seen.includes(normNs(ns)));
+        if (drifted) return { id, props: { ...props, domain, nameservers: observed } };
+      }
+    } catch {
+      // keep state
+    }
+    return { id, props: { ...props, domain } };
+  },
+
+  async diff(_id: string, olds: ResolvedNameserverInputs, news: ResolvedNameserverInputs) {
+    // An unknown list (sentinel, not an array) always counts as a change. A replacement must
+    // also be reported as a change, or the engine may treat the diff as a no-op.
+    const replaces: string[] = [];
+    if (olds.domain !== news.domain) replaces.push("domain");
+    const changes =
+      replaces.length > 0 ||
+      !Array.isArray(news.nameservers) ||
+      !sameNs(olds.nameservers, news.nameservers);
+    return { changes, replaces };
+  },
+
+  async update(_id: string, _olds: ResolvedNameserverInputs, news: ResolvedNameserverInputs) {
+    const call = createClient(news.loopiaUser, news.loopiaPassword);
+    await call<string>("updateDNSServers", [news.domain, news.nameservers]);
+    return { outs: { ...news } };
+  },
+
+  async delete() {
+    // Intentionally nothing: there is no "unset", and removing this resource from the
+    // program must never move a domain's delegation. Set the nameservers you want in code.
+  },
+};
+
+export class LoopiaDomainNameservers extends pulumi.dynamic.Resource {
+  constructor(
+    name: string,
+    args: LoopiaDomainNameserversInputs & {
+      loopiaUser: pulumi.Input<string>;
+      loopiaPassword: pulumi.Input<string>;
+    },
+    opts?: pulumi.CustomResourceOptions
+  ) {
+    // Credentials are kept in the state (read/update need them), so mark them secret.
+    super(loopiaNameserversProvider, name, args, {
+      ...opts,
+      additionalSecretOutputs: [
+        "loopiaUser",
+        "loopiaPassword",
+        ...(opts?.additionalSecretOutputs ?? []),
+      ],
+    });
   }
 }

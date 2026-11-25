@@ -1,6 +1,6 @@
 {
   "name": "@technowobble/loopia-provider",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Unofficial Pulumi dynamic provider for Loopia DNS zone records (XML-RPC API)",
   "license": "MIT",
   "main": "dist/index.js",

@@ -194,6 +194,17 @@ describe("diff", () => {
     expect((await loopiaProvider.diff!("id", old, { ...base, rdata: "192.0.2.2" })).changes).toBe(true);
   });
 
+  it("reports a subdomain-only or domain-only change as a replacement and a change", async () => {
+    expect(await loopiaProvider.diff!("id", old, { ...base, subdomain: "www" })).toEqual({
+      changes: true,
+      replaces: ["subdomain"],
+    });
+    expect(await loopiaProvider.diff!("id", old, { ...base, domain: "example.org" })).toEqual({
+      changes: true,
+      replaces: ["domain"],
+    });
+  });
+
   it("replaces on type, subdomain or domain change", async () => {
     const r = await loopiaProvider.diff!("id", old, {
       ...base,
