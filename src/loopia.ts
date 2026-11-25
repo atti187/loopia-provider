@@ -200,17 +200,19 @@ export const loopiaProvider: pulumi.dynamic.ResourceProvider = {
     // as 0, like the inputs do: comparing `undefined !== 0` made such records show
     // as an update on every preview and run a no-op updateZoneRecord on every
     // deploy.
-    const changes =
-      normRdata(news.type, olds.rdata) !== normRdata(news.type, news.rdata) ||
-      olds.ttl !== news.ttl ||
-      (olds.priority ?? 0) !== (news.priority ?? 0) ||
-      olds.type !== news.type;
-
-    // Type or subdomain change requires delete + recreate.
+    // Type, subdomain or domain change requires delete + recreate.
     const replaces: string[] = [];
     if (olds.type !== news.type) replaces.push("type");
     if (olds.subdomain !== news.subdomain) replaces.push("subdomain");
     if (olds.domain !== news.domain) replaces.push("domain");
+
+    // A replacement must also be reported as a change, or the engine may treat the diff as a
+    // no-op (this used to be missed for a subdomain-only or domain-only change).
+    const changes =
+      replaces.length > 0 ||
+      normRdata(news.type, olds.rdata) !== normRdata(news.type, news.rdata) ||
+      olds.ttl !== news.ttl ||
+      (olds.priority ?? 0) !== (news.priority ?? 0);
 
     return { changes, replaces };
   },
