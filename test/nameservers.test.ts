@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import dns from "node:dns";
+import * as pulumi from "@pulumi/pulumi";
 
 // Fake Loopia API; public DNS lookups are replaced by spies on the resolver. Nothing here
 // reaches the network (every read test asserts that the spy was the one used).
@@ -90,7 +91,7 @@ describe("check", () => {
   });
 
   it("skips validation while the list is unknown during a preview", async () => {
-    const unknown = "04da6b54-80e4-46f7-96ec-b56ff0331ba9";
+    const unknown = pulumi.runtime.unknownValue;
     expect((await provider.check!({} as any, { ...base, nameservers: unknown as any })).failures).toBeUndefined();
     expect(
       (await provider.check!({} as any, { ...base, nameservers: [unknown, "bart.ns.example.net"] })).failures
@@ -142,9 +143,9 @@ describe("diff", () => {
     expect(await provider.diff!("id", base, other)).toEqual({ changes: true, replaces: [] });
   });
 
-  it("replaces when the domain changes", async () => {
+  it("replaces when only the domain changes, and reports it as a change", async () => {
     const r = await provider.diff!("id", base, { ...base, domain: "example.org" });
-    expect(r.replaces).toEqual(["domain"]);
+    expect(r).toEqual({ changes: true, replaces: ["domain"] });
   });
 
   it("treats an unknown list as a change", async () => {

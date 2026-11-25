@@ -76,6 +76,9 @@ describe.skipIf(!existsSync(distIndex))("built package (dist)", () => {
     const { loopiaNameserversProvider } = require(join(__dirname, "..", "dist", "loopia.js"));
     const { text } = await pulumi.runtime.serializeFunction(() => loopiaNameserversProvider);
     expect(text).toContain('require("dns")');
+    // the unknown marker is inlined as a literal, not captured through the Pulumi module
+    expect(text).toContain(pulumi.runtime.unknownValue);
+    expect(text).not.toContain('require("@pulumi/pulumi")');
     expect(text).not.toContain("not-a-real-password");
   });
 

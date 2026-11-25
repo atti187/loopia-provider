@@ -299,6 +299,12 @@ interface ResolvedNameserverInputs {
   loopiaPassword: string;
 }
 
+// Pulumi's marker for "not known yet" (e.g. a zone's nameservers during a preview). Read it
+// into a plain string here: the serializer inlines strings, so the provider does not have to
+// capture the whole Pulumi module.
+const unknownValue: string =
+  (pulumi.runtime as { unknownValue?: string }).unknownValue ?? "04da6b54-80e4-46f7-96ec-b56ff0331ba9";
+
 // Hostnames are compared without a trailing dot and case-insensitively, and in any order.
 const normNs = (s: string) => s.trim().replace(/\.$/, "").toLowerCase();
 const sameNs = (a: string[], b: string[]) => {
@@ -311,9 +317,8 @@ export const loopiaNameserversProvider: pulumi.dynamic.ResourceProvider = {
   async check(_olds: ResolvedNameserverInputs, news: ResolvedNameserverInputs) {
     // During a preview the list can still be unknown (e.g. a zone that does not exist yet):
     // Pulumi passes a sentinel then. Only validate what is known.
-    const unknown = "04da6b54-80e4-46f7-96ec-b56ff0331ba9";
     const list = news.nameservers as unknown;
-    if (!Array.isArray(list) || list.includes(unknown)) return { inputs: news };
+    if (!Array.isArray(list) || list.includes(unknownValue)) return { inputs: news };
 
     const failures: { property: string; reason: string }[] = [];
     if (list.length < 2) {
@@ -357,10 +362,14 @@ export const loopiaNameserversProvider: pulumi.dynamic.ResourceProvider = {
   },
 
   async diff(_id: string, olds: ResolvedNameserverInputs, news: ResolvedNameserverInputs) {
-    // An unknown list (sentinel, not an array) always counts as a change.
-    const changes = !Array.isArray(news.nameservers) || !sameNs(olds.nameservers, news.nameservers);
+    // An unknown list (sentinel, not an array) always counts as a change. A replacement must
+    // also be reported as a change, or the engine may treat the diff as a no-op.
     const replaces: string[] = [];
     if (olds.domain !== news.domain) replaces.push("domain");
+    const changes =
+      replaces.length > 0 ||
+      !Array.isArray(news.nameservers) ||
+      !sameNs(olds.nameservers, news.nameservers);
     return { changes, replaces };
   },
 
