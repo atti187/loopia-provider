@@ -90,6 +90,11 @@ describe("check", () => {
     expect(r.failures).toBeUndefined();
   });
 
+  it("rejects a known value that is not a list", async () => {
+    const r = await provider.check!({} as any, { ...base, nameservers: "ns1.example.net" as any });
+    expect(r.failures?.[0].reason).toMatch(/list of hostnames/);
+  });
+
   it("skips validation while the list is unknown during a preview", async () => {
     const unknown = pulumi.runtime.unknownValue;
     expect((await provider.check!({} as any, { ...base, nameservers: unknown as any })).failures).toBeUndefined();
@@ -161,6 +166,31 @@ describe("read (refresh)", () => {
     expect(resolveNs).toHaveBeenCalledWith("example.com");
     expect(res.props).toEqual(base);
     expect(api.calls).toHaveLength(0); // the API is never used to read
+  });
+
+  it("tolerates extra nameservers at the zone apex", async () => {
+    dnsFake.result = ["anna.ns.example.net", "bart.ns.example.net", "extra.ns.example.net"];
+    const res = await provider.read!("example.com", base);
+    expect(resolveNs).toHaveBeenCalledWith("example.com");
+    expect(res.props).toEqual(base);
+  });
+
+  it("reports drift when a configured nameserver is missing from public DNS", async () => {
+    dnsFake.result = ["anna.ns.example.net", "other.ns.example.net"];
+    const res = await provider.read!("example.com", base);
+    expect(resolveNs).toHaveBeenCalledWith("example.com");
+    expect(res.props?.nameservers).toEqual(["anna.ns.example.net", "other.ns.example.net"]);
+  });
+
+  it("on import, takes the domain from the id and records the observed nameservers", async () => {
+    dnsFake.result = ["anna.ns.example.net", "bart.ns.example.net"];
+    const res = await provider.read!("example.com", {} as any);
+    expect(resolveNs).toHaveBeenCalledWith("example.com");
+    expect(res.id).toBe("example.com");
+    expect(res.props).toEqual({
+      domain: "example.com",
+      nameservers: ["anna.ns.example.net", "bart.ns.example.net"],
+    });
   });
 
   it("reports the observed list when public DNS differs", async () => {

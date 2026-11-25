@@ -281,7 +281,8 @@ export class LoopiaZoneRecord extends pulumi.dynamic.Resource {
 // reads them back (getDomain returns no nameserver field, and the zone's own NS records
 // always say ns1/ns2.loopia.se). So this resource is "set and trust": state holds what
 // Pulumi last wrote. `pulumi refresh` additionally compares it with the NS records seen in
-// public DNS, as a hint of manual changes (propagation can lag behind a change).
+// public DNS, as a hint of manual changes (propagation can lag behind a change, and extra
+// NS records at the apex are tolerated).
 // Deleting the resource does nothing: the domain keeps its nameservers.
 //
 // As above, keep everything the provider needs inside function bodies or as module-level
@@ -309,7 +310,7 @@ const unknownValue: string =
 
 // Hostnames are compared without a trailing dot and case-insensitively, and in any order.
 const normNs = (s: string) => s.trim().replace(/\.$/, "").toLowerCase();
-const sameNs = (a: string[], b: string[]) => {
+const sameNs = (a: string[] = [], b: string[] = []) => {
   const x = a.map(normNs).sort();
   const y = b.map(normNs).sort();
   return x.length === y.length && x.every((v, i) => v === y[i]);
@@ -320,7 +321,13 @@ export const loopiaNameserversProvider: pulumi.dynamic.ResourceProvider = {
     // During a preview the list can still be unknown (e.g. a zone that does not exist yet):
     // Pulumi passes a sentinel then. Only validate what is known.
     const list = news.nameservers as unknown;
-    if (!Array.isArray(list) || list.includes(unknownValue)) return { inputs: news };
+    if (list === unknownValue) return { inputs: news };
+    if (!Array.isArray(list)) {
+      return {
+        failures: [{ property: "nameservers", reason: "nameservers must be a list of hostnames" }],
+      };
+    }
+    if (list.includes(unknownValue)) return { inputs: news };
 
     const failures: { property: string; reason: string }[] = [];
     if (list.length < 2) {
@@ -348,19 +355,26 @@ export const loopiaNameserversProvider: pulumi.dynamic.ResourceProvider = {
   },
 
   async read(id: string, props: ResolvedNameserverInputs) {
-    // The API cannot return the nameservers, so look at what public DNS says. If the
-    // lookup fails, keep the stored state: no lookup result is not evidence of drift.
+    // The API cannot return the nameservers, so look at what public DNS says. If the lookup
+    // fails, keep the stored state: no lookup result is not evidence of drift.
+    // On `pulumi import` only the id (the domain) is known, so take it from there.
+    const domain = props?.domain ?? id;
     try {
       const resolver = new dns.promises.Resolver({ timeout: 4000, tries: 2 });
       resolver.setServers(["1.1.1.1", "8.8.8.8"]);
-      const observed = await resolver.resolveNs(props.domain);
-      if (observed.length > 0 && !sameNs(observed, props.nameservers)) {
-        return { id, props: { ...props, nameservers: observed } };
+      const observed = await resolver.resolveNs(domain);
+      if (observed.length > 0) {
+        // Drift means a configured nameserver is missing from what DNS shows. Extra servers
+        // at the zone apex are tolerated: the apex NS set is not always the delegation.
+        const seen = observed.map(normNs);
+        const stored = props?.nameservers;
+        const drifted = !Array.isArray(stored) || stored.some((ns) => !seen.includes(normNs(ns)));
+        if (drifted) return { id, props: { ...props, domain, nameservers: observed } };
       }
     } catch {
       // keep state
     }
-    return { id, props };
+    return { id, props: { ...props, domain } };
   },
 
   async diff(_id: string, olds: ResolvedNameserverInputs, news: ResolvedNameserverInputs) {

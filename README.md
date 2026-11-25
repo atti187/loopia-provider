@@ -106,9 +106,10 @@ Things to know before using it:
 
 - **Loopia cannot tell Pulumi what the nameservers are.** The API can set them but has no method
   that reads them, so this resource is "set and trust": the state holds what Pulumi last wrote.
-- **Drift hint on refresh.** `pulumi refresh` compares the stored list with the NS records seen in
-  public DNS (1.1.1.1 and 8.8.8.8). A difference is recorded as drift, and the next `pulumi up`
-  writes your list again. Previews and updates never do the lookup. After a change it can take a
+- **Drift hint on refresh.** `pulumi refresh` looks up the domain's NS records in public DNS
+  (1.1.1.1 and 8.8.8.8). If one of your nameservers is missing from them, the observed list is
+  recorded as drift, and the next `pulumi up` writes your list again. Extra NS records at the apex
+  are tolerated. Previews and updates never do the lookup. After a change it can take a
   while for public DNS to follow, and a failed lookup is ignored.
 - **Delete does nothing.** Removing the resource from your program leaves the domain where it is,
   so a code change can never take a site offline by itself. To go back to Loopia's own DNS, set the
