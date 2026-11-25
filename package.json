@@ -1,0 +1,45 @@
+{
+  "name": "@technowobble/loopia-provider",
+  "version": "1.0.0",
+  "description": "Unofficial Pulumi dynamic provider for Loopia DNS zone records (XML-RPC API)",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "pulumi",
+    "loopia",
+    "dns"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/atti187/loopia-provider.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "xmlrpc": "^1.3.2"
+  },
+  "devDependencies": {
+    "@pulumi/pulumi": "^3",
+    "@types/node": "^26.6.10",
+    "@types/xmlrpc": "^1.3.10",
+    "typescript": "^6.0.3",
+    "vitest": "^5.1.1"
+  },
+  "peerDependencies": {
+    "@pulumi/pulumi": "^3"
+  }
+}
